@@ -1,0 +1,35 @@
+[Unit]
+Description=fmsg-groot — I am Groot auto-replier
+Documentation=https://github.com/markmnl/fmsg-groot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fmsg
+Group=fmsg
+
+EnvironmentFile=/opt/fmsg-groot/env
+ExecStart=/opt/fmsg-groot/fmsg-groot
+WorkingDirectory=/opt/fmsg-groot
+
+Restart=on-failure
+RestartSec=5
+
+# Filesystem
+ReadWritePaths=/opt/fmsg-groot
+ReadWritePaths=/var/lib/fmsg-groot
+PrivateTmp=true
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

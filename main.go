@@ -16,6 +16,7 @@ func main() {
 	apiURL := flag.String("api-url", envOr("FMSG_API_URL", ""), "fmsg Web API base URL (or FMSG_API_URL)")
 	apiKey := flag.String("api-key", envOr("FMSG_API_KEY", ""), "fmsg API key (or FMSG_API_KEY)")
 	statePath := flag.String("state", envOr("FMSG_GROOT_STATE", "./fmsg-groot.state"), "path to last-seen message ID file")
+	a2aStatePath := flag.String("a2a-state", envOr("FMSG_GROOT_A2A_STATE", ""), "path to A2A replay state (defaults to <state>.a2a)")
 	flag.Parse()
 
 	if *apiURL == "" || *apiKey == "" {
@@ -37,6 +38,15 @@ func main() {
 		log.Fatalf("authenticate: %v", err)
 	}
 	log.Printf("I am Groot. Listening as %s against %s", addr, *apiURL)
+	if *a2aStatePath == "" {
+		*a2aStatePath = *statePath + ".a2a"
+	}
+	a2aState, err := LoadA2AState(*a2aStatePath)
+	if err != nil {
+		log.Fatalf("load A2A state: %v", err)
+	}
+	a2aServer := NewA2AServer(a2aState)
+	go a2aServer.MonitorPending(ctx, client, addr)
 
 	lastID, err := LoadLastID(*statePath)
 	if err != nil {
@@ -62,7 +72,7 @@ func main() {
 	// Persist after each successful handler (Watch advances lastID only then).
 	// Intentional skips also return nil so the cursor advances.
 	last, err := client.Watch(ctx, lastID, func(ctx context.Context, msg Message) error {
-		if err := handleMessage(ctx, client, addr, msg); err != nil {
+		if err := handleMessage(ctx, client, a2aServer, addr, msg); err != nil {
 			return err
 		}
 		if err := SaveLastID(*statePath, msg.ID); err != nil {
@@ -79,9 +89,16 @@ func main() {
 	log.Printf("I am Groot. Shutting down (last id %d).", last)
 }
 
-func handleMessage(ctx context.Context, client *Client, self string, msg Message) error {
+func handleMessage(ctx context.Context, client *Client, a2aServer *A2AServer, self string, msg Message) error {
 	if normalizeAddr(msg.From) == normalizeAddr(self) {
 		log.Printf("skip id=%d from self", msg.ID)
+		return nil
+	}
+	if isA2AMediaType(msg.Type) {
+		if err := a2aServer.Handle(ctx, client, self, msg); err != nil {
+			return fmt.Errorf("handle A2A request %d: %w", msg.ID, err)
+		}
+		log.Printf("handled A2A request id=%d from=%s", msg.ID, msg.From)
 		return nil
 	}
 	if msg.NoReply {

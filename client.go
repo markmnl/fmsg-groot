@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"sort"
 	"strconv"
@@ -34,7 +36,7 @@ type Client struct {
 	address     string
 }
 
-// Attachment is unused by the bot but present on list payloads.
+// Attachment describes one attachment on a message list payload.
 type Attachment struct {
 	Filename string `json:"filename"`
 	Size     int64  `json:"size"`
@@ -42,7 +44,9 @@ type Attachment struct {
 
 // RecipientDelivery is delivery state for one recipient.
 type RecipientDelivery struct {
-	Addr string `json:"addr"`
+	Addr          string  `json:"addr"`
+	TimeDelivered *string `json:"time_delivered"`
+	ResponseCode  *int    `json:"response_code"`
 }
 
 // AddToBatch is one batch of recipients added to a message.
@@ -54,20 +58,41 @@ type AddToBatch struct {
 
 // Message is inbox / event message metadata.
 type Message struct {
-	ID        int64       `json:"id"`
-	Version   int         `json:"version"`
-	HasPID    bool        `json:"has_pid"`
-	HasAddTo  bool        `json:"has_add_to"`
-	Important bool        `json:"important"`
-	NoReply   bool        `json:"no_reply"`
-	PID       *int64      `json:"pid"`
-	From      string      `json:"from"`
-	To        []string    `json:"to"`
-	AddTo     []AddToBatch `json:"add_to"`
-	Time      *float64    `json:"time"`
-	Topic     string      `json:"topic"`
-	Type      string      `json:"type"`
-	Size      int64       `json:"size"`
+	ID          int64               `json:"id"`
+	Version     int                 `json:"version"`
+	HasPID      bool                `json:"has_pid"`
+	HasAddTo    bool                `json:"has_add_to"`
+	Important   bool                `json:"important"`
+	NoReply     bool                `json:"no_reply"`
+	PID         *int64              `json:"pid"`
+	From        string              `json:"from"`
+	To          []string            `json:"to"`
+	ToDelivery  []RecipientDelivery `json:"to_delivery"`
+	AddTo       []AddToBatch        `json:"add_to"`
+	Time        *float64            `json:"time"`
+	Topic       string              `json:"topic"`
+	Type        string              `json:"type"`
+	Size        int64               `json:"size"`
+	Attachments []Attachment        `json:"attachments"`
+}
+
+// OutgoingAttachment is an fmsg attachment uploaded with a draft.
+type OutgoingAttachment struct {
+	Filename  string
+	MediaType string
+	Data      []byte
+}
+
+// OutgoingMessage is the subset of FMSG-003 draft fields used by Groot.
+type OutgoingMessage struct {
+	From        string
+	To          []string
+	PID         int64
+	Topic       string
+	Type        string
+	Data        []byte
+	NoReply     bool
+	Attachments []OutgoingAttachment
 }
 
 // APIError is a non-2xx Web API response.
@@ -165,24 +190,101 @@ func (c *Client) Data(ctx context.Context, id int64) ([]byte, error) {
 	return data, nil
 }
 
+// GetMessage returns metadata for one message visible to the authenticated identity.
+func (c *Client) GetMessage(ctx context.Context, id int64) (Message, error) {
+	if id <= 0 {
+		return Message{}, errors.New("message ID must be positive")
+	}
+	var message Message
+	if err := c.doJSON(ctx, http.MethodGet, "/fmsg/"+strconv.FormatInt(id, 10), nil, &message); err != nil {
+		return Message{}, err
+	}
+	message.ID = id
+	return message, nil
+}
+
+// AttachmentData downloads one attachment and returns its raw bytes.
+func (c *Client) AttachmentData(ctx context.Context, id int64, filename string) ([]byte, error) {
+	if id <= 0 || filename == "" {
+		return nil, errors.New("message ID and attachment filename are required")
+	}
+	path := "/fmsg/" + strconv.FormatInt(id, 10) + "/attach/" + url.PathEscape(filename)
+	response, err := c.do(ctx, http.MethodGet, path, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read attachment %q: %w", filename, err)
+	}
+	return data, nil
+}
+
+// AttachmentTypes returns the authoritative fmsg media type for each attachment.
+func (c *Client) AttachmentTypes(ctx context.Context, id int64) (map[string]string, error) {
+	var thread struct {
+		Messages []struct {
+			ID          int64 `json:"id"`
+			Attachments []struct {
+				Filename string `json:"filename"`
+				Type     string `json:"type"`
+			} `json:"attachments"`
+		} `json:"messages"`
+	}
+	path := "/fmsg/" + strconv.FormatInt(id, 10) + "/thread/messages"
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &thread); err != nil {
+		return nil, err
+	}
+	for _, message := range thread.Messages {
+		if message.ID != id {
+			continue
+		}
+		result := make(map[string]string, len(message.Attachments))
+		for _, attachment := range message.Attachments {
+			result[strings.ToLower(attachment.Filename)] = attachment.Type
+		}
+		return result, nil
+	}
+	return nil, errors.New("message missing from its thread response")
+}
+
 // CreateAndSend posts a draft and sends it. Returns the draft id.
 func (c *Client) CreateAndSend(ctx context.Context, from string, to []string, pid int64, body string) (int64, error) {
+	return c.CreateAndSendMessage(ctx, OutgoingMessage{
+		From: from,
+		To:   to,
+		PID:  pid,
+		Type: "text/plain; charset=utf-8",
+		Data: []byte(body),
+	})
+}
+
+// CreateAndSendMessage creates a draft, uploads its attachments, and sends it.
+func (c *Client) CreateAndSendMessage(ctx context.Context, message OutgoingMessage) (int64, error) {
+	from := message.From
 	if from == "" {
 		from = c.Address()
 	}
-	if len(to) == 0 {
+	if len(message.To) == 0 {
 		return 0, errors.New("at least one recipient is required")
 	}
-	draft := map[string]any{
-		"version": 1,
-		"from":    from,
-		"to":      to,
-		"type":    "text/plain; charset=utf-8",
-		"size":    len([]byte(body)),
-		"data":    body,
+	if message.Type == "" {
+		return 0, errors.New("message media type is required")
 	}
-	if pid > 0 {
-		draft["pid"] = pid
+	draft := map[string]any{
+		"version":  1,
+		"from":     from,
+		"to":       message.To,
+		"type":     message.Type,
+		"size":     len(message.Data),
+		"data":     string(message.Data),
+		"no_reply": message.NoReply,
+	}
+	if message.PID > 0 {
+		draft["pid"] = message.PID
+	} else if message.Topic != "" {
+		draft["topic"] = message.Topic
 	}
 	var response struct {
 		ID int64 `json:"id"`
@@ -193,10 +295,67 @@ func (c *Client) CreateAndSend(ctx context.Context, from string, to []string, pi
 	if response.ID <= 0 {
 		return 0, errors.New("fmsg Web API returned an invalid draft ID")
 	}
+	for _, attachment := range message.Attachments {
+		if err := c.uploadAttachment(ctx, response.ID, attachment); err != nil {
+			_ = c.DeleteDraft(ctx, response.ID)
+			return response.ID, err
+		}
+	}
 	if err := c.doJSON(ctx, http.MethodPost, "/fmsg/"+strconv.FormatInt(response.ID, 10)+"/send", nil, nil); err != nil {
 		return response.ID, err
 	}
 	return response.ID, nil
+}
+
+func (c *Client) uploadAttachment(ctx context.Context, id int64, attachment OutgoingAttachment) error {
+	if attachment.Filename == "" {
+		return errors.New("attachment filename is required")
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, attachment.Filename))
+	mediaType := attachment.MediaType
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	header.Set("Content-Type", mediaType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return fmt.Errorf("create attachment form: %w", err)
+	}
+	if _, err := part.Write(attachment.Data); err != nil {
+		return fmt.Errorf("write attachment form: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close attachment form: %w", err)
+	}
+	path := "/fmsg/" + strconv.FormatInt(id, 10) + "/attach"
+	response, err := c.do(ctx, http.MethodPost, path, body.Bytes(), writer.FormDataContentType())
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	var uploaded struct {
+		Filename string `json:"filename"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&uploaded); err != nil {
+		return fmt.Errorf("decode attachment upload: %w", err)
+	}
+	if uploaded.Filename != attachment.Filename {
+		return fmt.Errorf("attachment stored as %q, expected %q", uploaded.Filename, attachment.Filename)
+	}
+	return nil
+}
+
+// DeleteDraft removes an unsent draft, including any uploaded attachments.
+func (c *Client) DeleteDraft(ctx context.Context, id int64) error {
+	response, err := c.do(ctx, http.MethodDelete, "/fmsg/"+strconv.FormatInt(id, 10), nil, "")
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	return nil
 }
 
 // Watch delivers new inbox messages in increasing local ID order.

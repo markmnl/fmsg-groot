@@ -1,3 +1,6 @@
+[![Build & Test](https://github.com/markmnl/fmsg-groot/actions/workflows/build-test.yml/badge.svg?branch=main)](https://github.com/markmnl/fmsg-groot/actions/workflows/build-test.yml?query=branch%3Amain)
+[![Go 1.27+](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+
 # fmsg-groot
 
 I am Groot.
@@ -29,7 +32,7 @@ security requirement and does not accept an envelope `credentials` object.
 
 ## Requirements
 
-- Go 1.26.4 or newer (to build)
+- Go 1.27 or newer (to build)
 - An fmsg Web API base URL and an API key (`fmsgk_…`) for the address that
   should speak as Groot
 

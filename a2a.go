@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -422,12 +423,7 @@ func textFromParts(parts a2a.ContentParts) (string, *a2aFailure) {
 }
 
 func containsTextPlain(values []string) bool {
-	for _, value := range values {
-		if isTextPlain(value) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(values, isTextPlain)
 }
 
 func validTaskState(state a2a.TaskState) bool {

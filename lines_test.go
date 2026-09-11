@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -21,16 +22,10 @@ func TestGrootLinesNonEmptyAndContainGroot(t *testing.T) {
 
 func TestPickLineFromTable(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		line := PickLine()
 		seen[line] = true
-		ok := false
-		for _, l := range GrootLines {
-			if l == line {
-				ok = true
-				break
-			}
-		}
+		ok := slices.Contains(GrootLines, line)
 		if !ok {
 			t.Fatalf("PickLine returned unknown line %q", line)
 		}

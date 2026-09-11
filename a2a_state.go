@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -137,9 +138,7 @@ func (s *A2AState) Pending() map[int64]pendingA2AResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make(map[int64]pendingA2AResult, len(s.state.Pending))
-	for id, pending := range s.state.Pending {
-		result[id] = pending
-	}
+	maps.Copy(result, s.state.Pending)
 	return result
 }
 

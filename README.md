@@ -59,6 +59,43 @@ The process authenticates via `POST /fmsg/token`, watches `GET /fmsg/ws` (with
 HTTP inbox catch-up), and sends replies as drafts through the Web API. See
 [FMSG-003](https://github.com/markmnl/fmsg/blob/main/standards/fmsg-003-webapi.md).
 
+## A2A Go client transport
+
+Package [`a2afmsg`](a2afmsg) is a transport plugin for the official
+[`a2aclient`](https://pkg.go.dev/github.com/a2aproject/a2a-go/v2/a2aclient).
+It registers the exact FMSG-004 binding identifier, so an ordinary A2A client
+can select Groot's `fmsg:` interface from its Agent Card:
+
+```go
+client, err := a2aclient.NewFromCard(ctx, card,
+    a2afmsg.WithTransport(a2afmsg.Config{
+        WebAPIURL: "https://api.example.com",
+        APIKey:   os.Getenv("FMSG_API_KEY"),
+    }),
+)
+
+result, err := client.SendMessage(ctx, &a2a.SendMessageRequest{
+    Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("Hello Groot")),
+})
+```
+
+The transport handles all A2A 1.0 operations, request/result correlation,
+task and context parent selection, native `Part.raw` attachments, detached
+retries after fmsg response code 6, typed A2A errors, configurable timeouts,
+and bounded ordering of streaming events.
+
+For a direct end-to-end test, build the included client and supply credentials
+for the caller's fmsg address (not Groot's):
+
+```sh
+go build -o a2a-fmsg ./cmd/a2a-fmsg
+export FMSG_API_URL=https://api.example.com
+export FMSG_API_KEY=fmsgk_callers_key
+./a2a-fmsg -card https://fmsg.io "Hello Groot"
+```
+
+Using a caller on another fmsg domain also exercises federated delivery.
+
 ## systemd
 
 Concise install as a service (paths match other fmsg host services):

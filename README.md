@@ -1,3 +1,5 @@
+> **Obsolete:** This repository is obsolete and no longer actively maintained.
+
 # fmsg-groot
 
 I am Groot.
